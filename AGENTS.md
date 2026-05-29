@@ -41,11 +41,21 @@ Goal: Never miss valuable statement credits, companion certificates, quarterly a
 - `data/` → Sample data and templates
 - `docs/` → Architecture and planning docs
 
-## Current Focus (as of May 2026)
-Building V1 + V1.5 features:
-- Core perk tracking + monthly digest
-- Trip suggestions
-- Value logging and basic reporting
+## Current Focus (as of late May 2026)
+**V1 + V1.5 complete and production-usable**:
+- Full Google Sheets data model (5 worksheets) + realistic 2026 seed data for all three cards
+- Working Streamlit dashboard with live status computation, "Mark as Used + Log Value" (including trip linking), and trip-aware suggestions
+- Cloud monthly digest via Google Apps Script (primary, highly reliable) + Python alternative
+- All core reset types supported with correct date logic
+
+Next logical work: V2 scaffolding (Enrollments UI + richer History/Reports page with charts) + any polish the user requests.
+
+Key modules to know:
+- `app/utils/date_utils.py` — pure functions for every reset type
+- `app/utils/sheets_client.py` — cached gspread layer
+- `app/utils/suggestions.py` — V1.5 suggestion engine
+- `scripts/seed_sheets.py` — the critical onboarding tool
+- `automation/apps_script/Code.gs` + README — the cloud notification heart
 
 ## Future / V2 Ideas
 - Enrollment status tracking

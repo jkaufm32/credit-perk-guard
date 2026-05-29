@@ -1,0 +1,7 @@
+[theme]
+base = "dark"
+primaryColor = "#00c4b4"       # Teal accent (good for finance/travel)
+backgroundColor = "#0f1116"
+secondaryBackgroundColor = "#161a23"
+textColor = "#e6e6e6"
+font = "sans serif"

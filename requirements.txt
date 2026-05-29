@@ -1,0 +1,18 @@
+# PerkGuard - Personal Credit Card Perk Tracker
+# Core dependencies for Streamlit dashboard + Google Sheets integration
+
+streamlit>=1.33.0,<2.0.0
+gspread>=6.1.0,<7.0.0
+google-auth>=2.28.0,<3.0.0
+python-dateutil>=2.9.0,<3.0.0
+
+# Data handling & reporting (used in dashboard + history views)
+pandas>=2.2.0,<3.0.0
+plotly>=5.20.0,<6.0.0   # For future charts in V2 reports (lightweight)
+
+# Optional but recommended for nicer CLI scripts / testing
+python-dotenv>=1.0.0,<2.0.0
+
+# Development / testing (optional for local work)
+# pytest>=8.0.0
+# mypy>=1.9.0
