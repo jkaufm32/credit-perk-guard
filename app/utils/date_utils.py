@@ -2,6 +2,7 @@
 PerkGuard Date & Reset Utilities
 Pure functions for calculating availability, period keys, and expiry
 across all supported reset types.
+
 Supported reset_type values:
     calendar_year, quarterly, monthly, card_anniversary, semi_annual, one_time, custom
 
@@ -142,21 +143,23 @@ def is_perk_currently_relevant(
 ) -> bool:
     """
     Return whether a perk should be shown in the current dashboard / digest view.
-
-    This keeps the view focused on benefits whose active window is currently
-    relevant:
-
-    - semi_annual: Only the H1 perk is shown during Jan–Jun; only H2 during Jul–Dec.
-    - quarterly:   Only the current quarter's perk is shown (e.g. only the Q2 row in Q2).
-    - monthly:     Shown every month (monthly benefits are always relevant).
-
-    All other reset types are always considered relevant.
+    This version is defensive against bad/malformed rows in the sheet.
     """
     if today is None:
         today = date.today()
 
+    # Skip completely empty or broken rows
+    perk_id = perk.get("perk_id")
+    if not perk_id or str(perk_id).strip() == "":
+        return False
+
     reset_type = perk.get("reset_type")
-    anchor = (perk.get("reset_anchor") or "").upper().strip()
+    if not reset_type:
+        return True  # default to showing if reset_type is missing/empty
+
+    # Safely coerce reset_anchor to string (handles dates, numbers, None, etc.)
+    raw_anchor = perk.get("reset_anchor")
+    anchor = str(raw_anchor).upper().strip() if raw_anchor is not None else ""
 
     if reset_type == "semi_annual":
         current_half = "H1" if today.month <= 6 else "H2"
