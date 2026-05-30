@@ -2,7 +2,6 @@
 PerkGuard Date & Reset Utilities
 Pure functions for calculating availability, period keys, and expiry
 across all supported reset types.
-
 Supported reset_type values:
     calendar_year, quarterly, monthly, card_anniversary, semi_annual, one_time, custom
 
@@ -350,6 +349,9 @@ def get_expiring_soon_perks(
     """
     if today is None:
         today = date.today()
+
+    # === Exclude inactive perks from the expiring list ===
+    perks = [p for p in perks if p.get("is_active", True)]
 
     result = []
     for perk in perks:
