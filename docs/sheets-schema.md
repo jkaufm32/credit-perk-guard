@@ -34,7 +34,9 @@ This sheet defines every perk you want to track. Most fields are static; a few (
 - `card_anniversary` → `anniv`. Uses the corresponding `_anniversary_month` from the **Settings** sheet.
 - `semi_annual` → `H1` (Jan 1 – Jun 30) or `H2` (Jul 1 – Dec 31).
 - `one_time` → Any value. Never automatically resets (Global Entry, lifetime credits, etc.).
+  **Special case supported**: You may store a hard expiry date as `YYYY-MM-DD` here for limited-time benefits (e.g. a 2025 Companion Certificate that expires on a specific date). `date_utils` will treat it as the effective deadline for status and expiring calculations.
 - `custom` → Free-form string (advanced; implement specific logic in date_utils when needed).
+  Same hard-expiry date convention as `one_time` is supported.
 
 **Computed (never stored in this sheet)**:
 - Current period key (e.g. `2026-Q2`, `2026-05`, `2026-05-anniv`)

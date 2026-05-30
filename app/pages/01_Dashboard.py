@@ -19,6 +19,8 @@ from app.utils.date_utils import (
     is_perk_available_in_current_period,
     get_days_until_reset,
     get_expiring_soon_perks,
+    get_perk_status,
+    is_perk_currently_relevant,
     format_period_label,
     get_current_period_key,
 )
@@ -28,9 +30,12 @@ st.title("🛡️ PerkGuard")
 st.caption("Never miss a credit card benefit • " + date.today().strftime("%B %d, %Y"))
 
 def _clear_caches() -> None:
-    get_perks.clear()
-    get_value_logs.clear()
-    get_settings.clear()
+    """Clear all cached Sheets data (safe version)."""
+    from app.utils.sheets_client import get_all_records
+    try:
+        get_all_records.clear()
+    except Exception:
+        pass  # Don't crash the UI if cache clearing fails after a successful write
 
 status = get_connection_status()
 if not status.get("ok"):
@@ -49,7 +54,15 @@ if not perks:
 
 today = date.today()
 
+# Hide semi-annual perks whose half is not currently active
+# (e.g. hide H2 perks while we are still in H1)
+perks = [p for p in perks if is_perk_currently_relevant(p, today, settings)]
+
+# Compute summary stats early so KPIs + warning banner can render near the top
 available_perks = [p for p in perks if is_perk_available_in_current_period(p, value_logs, today, settings)]
+expiring = get_expiring_soon_perks(perks, value_logs, days_threshold=14, today=today, settings=settings)
+available_count = len(available_perks)
+
 suggestions = get_trip_suggestions(available_perks, trips, value_logs, today, settings)
 
 if suggestions:
@@ -64,6 +77,18 @@ if suggestions:
             )
 
 st.divider()
+
+# --------------------------------------------------------------------------- #
+# Summary KPIs + Warning Banner (prominently near top)
+# --------------------------------------------------------------------------- #
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Available Now", available_count)
+col2.metric("Expiring ≤14d", len(expiring))
+col3.metric("Total Perks Tracked", len(perks))
+col4.metric("Logs Recorded", len(value_logs))
+
+if expiring:
+    st.warning(f"⚠️ {len(expiring)} perks expiring soon — see the Expiring Soon tab below.")
 
 @st.dialog("Log Value Captured")
 def log_usage_dialog(perk: dict) -> None:
@@ -106,102 +131,164 @@ def log_usage_dialog(perk: dict) -> None:
                 st.success("✅ Value logged with trip link! Dashboard will refresh.")
                 st.rerun()
             except Exception as exc:
-                st.error(f"Failed to write to Google Sheets: {exc}")
-
-cards = sorted({p["card"] for p in perks if p.get("card")})
-
-for card in cards:
-    st.subheader(card)
-    card_perks = [p for p in perks if p.get("card") == card]
-
-    for perk in card_perks:
-        available = is_perk_available_in_current_period(perk, value_logs, today, settings)
-        days_left = get_days_until_reset(perk, today, settings)
-        period_key = get_current_period_key(perk, today, settings)
-        period_label = format_period_label(period_key)
-
-        if not perk.get("is_active", True):
-            status_text = "🚫 Inactive"
-            status_color = "#888"
-        elif not available:
-            status_text = "✅ Used this period"
-            status_color = "#22c55e"
-        else:
-            raw_anchor = perk.get("reset_anchor")
-            explicit_days = None
-            explicit_date = None
-
-            if raw_anchor and isinstance(raw_anchor, str) and raw_anchor.count("-") == 2:
-                try:
-                    from datetime import datetime as _dt
-                    explicit_date = _dt.strptime(raw_anchor, "%Y-%m-%d").date()
-                    explicit_days = (explicit_date - today).days
-                except:
-                    explicit_days = None
-
-            if explicit_days is not None and 0 < explicit_days <= 14:
-                status_text = f"⏰ Expires {explicit_date.strftime('%b %d, %Y')} ({explicit_days}d)"
-                status_color = "#f59e0b"
-            elif days_left <= 14:
-                status_text = f"⏰ Expiring in {days_left} days"
-                status_color = "#f59e0b"
-            else:
-                status_text = "🟢 Available"
-                status_color = "#22c55e"
-
-        with st.container(border=True):
-            c1, c2 = st.columns([3.5, 1.2])
-            with c1:
-                st.markdown(f"**{perk.get('name', 'Unnamed perk')}**")
-                st.caption(f"{perk.get('category', '')} • Resets: {period_label}")
-                if perk.get("notes"):
-                    st.caption(f"📝 {perk['notes']}")
-                if perk.get("enrollment_required"):
-                    st.caption("📋 Enrollment required (check your Amex app)")
-            with c2:
-                st.markdown(
-                    f"<div style='text-align:right; color:{status_color}; font-weight:600'>{status_text}</div>",
-                    unsafe_allow_html=True,
+                # Even if cache clearing fails, the write usually succeeded.
+                # Show a milder message so the user isn't alarmed.
+                st.warning(
+                    "Value was saved to Google Sheets, but there was a problem refreshing the cache.\n"
+                    f"Error details: {exc}\n\n"
+                    "Click the 'Refresh data from Sheets' button below to see the updated status."
                 )
-                if available and perk.get("is_active", True):
-                    if st.button("Mark as Used", key=f"mark_{perk['perk_id']}", type="primary", use_container_width=True):
-                        log_usage_dialog(perk)
 
-    st.divider()
 
-# --------------------------------------------------------------------------- #
-# Summary KPIs + Warning (always visible and accurate)
-# --------------------------------------------------------------------------- #
-available_count = sum(
-    1 for p in perks if is_perk_available_in_current_period(p, value_logs, today, settings)
-)
-expiring = get_expiring_soon_perks(perks, value_logs, days_threshold=14, today=today, settings=settings)
+def render_perk_card(perk: dict, status: dict, today, settings, show_mark_button: bool = True, key_prefix: str = "") -> None:
+    """Render a single perk card with improved visual treatment."""
+    period_label = format_period_label(get_current_period_key(perk, today, settings))
 
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Available Now", available_count)
-col2.metric("Expiring ≤14d", len(expiring))
-col3.metric("Total Perks Tracked", len(perks))
-col4.metric("Logs Recorded", len(value_logs))
+    is_expiring = status.get("state") == "expiring_soon"
+    container_class = "perk-card-expiring" if is_expiring else ""
 
-# Warning banner is now always shown (never disappears)
-st.warning(f"⚠️ {len(expiring)} perks expiring soon — review the lists below.")
+    # Add extra "critical" class for very urgent items (stronger visual)
+    days_left = status.get("days_left", 999)
+    if is_expiring and days_left <= 7:
+        container_class += " critical"
 
-# --------------------------------------------------------------------------- #
-# Expiring Soon Compact List
-# --------------------------------------------------------------------------- #
-if expiring:
-    st.subheader("⏰ Expiring Soon (≤14 days)")
-    for p in sorted(expiring, key=lambda x: x.get("days_left", 999)):
-        st.write(
-            f"- **{p['name']}** ({p['card']}) — **{p.get('days_left')} days** left • "
-            f"{format_period_label(get_current_period_key(p, today, settings))}"
+    # Build unique key for the button (required because the same perk can appear in multiple tabs)
+    button_key = f"mark_{perk['perk_id']}"
+    if key_prefix:
+        button_key += f"_{key_prefix}"
+
+    # Top progress bar on EVERY card — shows how close or far the perk is from its effective deadline/reset
+    days_left = status.get("days_left", 999)
+
+    # Use a 90-day scale. Cards with >90 days left will show a small minimum sliver so the bar is never completely empty.
+    BAR_MAX_DAYS = 90
+    MIN_VISIBLE_PCT = 5
+
+    if days_left >= BAR_MAX_DAYS:
+        fill_pct = MIN_VISIBLE_PCT
+    else:
+        fill_pct = max(MIN_VISIBLE_PCT, min(100, (BAR_MAX_DAYS - days_left) / BAR_MAX_DAYS * 100))
+
+    # Color coding for clarity
+    if days_left <= 14:
+        bar_color = "#f59e0b"      # Strong orange = urgent
+    elif days_left <= 30:
+        bar_color = "#fbbf24"      # Amber = approaching
+    else:
+        bar_color = "#6b7280"      # Muted gray = plenty of time left
+
+    # Use a container with optional extra class for styling
+    with st.container(border=True):
+        # Top progress bar – more prominent when critically close
+        bar_opacity = 0.35 if days_left <= 7 else 0.2
+        st.markdown(
+            f"""
+            <div style="
+                height: 7px;
+                width: 100%;
+                background: linear-gradient(to right, {bar_color} {fill_pct}%, #2d2d2d {fill_pct}%);
+                margin: 0 0 8px 0;
+                border-radius: 4px;
+                box-shadow: 0 0 0 1px rgba(245, 158, 11, {bar_opacity});
+            "></div>
+            """,
+            unsafe_allow_html=True,
         )
 
-st.caption(
-    "Data cached ~60s. Use the refresh button in the top-right or rerun the page to pull the latest from Sheets. "
-    "All status is computed live from ValueLogs — safe to edit notes directly in the sheet."
+        if container_class:
+            st.markdown(
+                f"<div class='{container_class}'>",
+                unsafe_allow_html=True,
+            )
+
+        c1, c2 = st.columns([3.5, 1.2])
+        with c1:
+            st.markdown(f"**{perk.get('name', 'Unnamed perk')}**")
+            st.caption(f"{perk.get('category', '')} • Resets: {period_label}")
+            if perk.get("notes"):
+                st.caption(f"📝 {perk['notes']}")
+            if perk.get("enrollment_required"):
+                st.caption("📋 Enrollment required (check your Amex app)")
+
+            # Show hard-expiry callout when relevant
+            if status.get("is_hard_expiry"):
+                st.caption("⏰ **Hard expiry date** (does not follow normal reset cycle)")
+
+        with c2:
+            st.markdown(
+                f"<div style='text-align:right; color:{status['status_color']}; font-weight:600'>{status['status_text']}</div>",
+                unsafe_allow_html=True,
+            )
+            if show_mark_button and status.get("is_available") and perk.get("is_active", True):
+                if st.button("Mark as Used", key=button_key, type="primary", use_container_width=True):
+                    log_usage_dialog(perk)
+
+        if container_class:
+            st.markdown("</div>", unsafe_allow_html=True)
+
+
+# --------------------------------------------------------------------------- #
+# Main Perk Views — Tabbed for clarity (per user preference)
+# --------------------------------------------------------------------------- #
+cards = sorted({p["card"] for p in perks if p.get("card")})
+
+tab_all, tab_expiring, tab_available, tab_used = st.tabs(
+    ["All Perks", "⏰ Expiring Soon", "Available Now", "Used This Period"]
 )
 
-if st.button("🔄 Refresh data from Sheets", type="secondary"):
+with tab_all:
+    for card in cards:
+        st.subheader(card)
+        card_perks = [p for p in perks if p.get("card") == card]
+
+        for perk in card_perks:
+            status = get_perk_status(perk, value_logs, today, settings)
+            render_perk_card(perk, status, today, settings, key_prefix="all")
+
+        st.divider()
+
+with tab_expiring:
+    if expiring:
+        st.caption("Perks with ≤14 days remaining (including hard-expiry dates). Strongest visual treatment applied.")
+        sorted_expiring = sorted(expiring, key=lambda x: x.get("days_left", 999))
+        for p in sorted_expiring:
+            status = get_perk_status(p, value_logs, today, settings)
+            # Force the rich card view even in this tab
+            render_perk_card(p, status, today, settings, show_mark_button=True, key_prefix="expiring")
+    else:
+        st.info("No perks expiring in the next 14 days. Great job!")
+
+with tab_available:
+    available_now = [p for p in perks if get_perk_status(p, value_logs, today, settings).get("is_available")]
+    if available_now:
+        for card in cards:
+            card_available = [p for p in available_now if p.get("card") == card]
+            if card_available:
+                st.subheader(card)
+                for perk in card_available:
+                    status = get_perk_status(perk, value_logs, today, settings)
+                    render_perk_card(perk, status, today, settings, key_prefix="available")
+    else:
+        st.info("No available perks right now.")
+
+with tab_used:
+    used_perks = [p for p in perks if not get_perk_status(p, value_logs, today, settings).get("is_available")]
+    if used_perks:
+        for card in cards:
+            card_used = [p for p in used_perks if p.get("card") == card]
+            if card_used:
+                st.subheader(card)
+                for perk in card_used:
+                    status = get_perk_status(perk, value_logs, today, settings)
+                    render_perk_card(perk, status, today, settings, show_mark_button=False, key_prefix="used")
+    else:
+        st.info("Nothing marked as used yet this period.")
+
+st.caption(
+    "Data is cached for ~60 seconds. Use the button below if you edited the Sheets directly on mobile."
+)
+
+if st.button("🔄 Refresh data from Sheets", type="secondary", use_container_width=True):
     _clear_caches()
     st.rerun()
+    st.toast("Cache cleared — pulling latest from Google Sheets...")
