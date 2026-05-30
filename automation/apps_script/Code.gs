@@ -74,6 +74,10 @@ function buildDigest() {
   perks.forEach(perk => {
     if (!perk.is_active) return;
 
+    // Apply the same relevance filter as the dashboard:
+    // Hide H2 during H1 (and vice versa), hide non-current quarterly perks, etc.
+    if (!isPerkCurrentlyRelevant(perk, today)) return;
+
     const periodKey = computePeriodKey(perk, today, settings);
     const hasUsage = valueLogs.some(log =>
       log.perk_id === perk.perk_id && log.period_key === periodKey
@@ -83,11 +87,19 @@ function buildDigest() {
 
     const enriched = { ...perk, period_key: periodKey, days_left: daysLeft };
 
+    // Determine expiring threshold
+    // Monthly perks only appear in "Expiring Soon" in the last 10 days of the month
+    // (to avoid them dominating the list for most of the month)
+    let expiringThreshold = 30;
+    if (perk.reset_type === 'monthly') {
+      expiringThreshold = 10;
+    }
+
     if (hasUsage) {
       usedThisPeriod.push(enriched);
     } else {
       available.push(enriched);
-      if (daysLeft > 0 && daysLeft <= 30) {
+      if (daysLeft > 0 && daysLeft <= expiringThreshold) {
         expiring.push(enriched);
       }
     }
@@ -96,6 +108,13 @@ function buildDigest() {
   // Simple trip-aware suggestions (V1 version — rule based)
   const suggestions = generateSimpleSuggestions(available, trips, today);
 
+  // Compute quick stats for the email header
+  const totalRelevant = available.length + usedThisPeriod.length;
+  const usedCount = usedThisPeriod.length;
+  const availableCount = available.length;
+  const expiringCount = expiring.length;
+  const usedPercent = totalRelevant > 0 ? Math.round((usedCount / totalRelevant) * 100) : 0;
+
   const html = buildHtmlEmail({
     today,
     available,
@@ -103,6 +122,13 @@ function buildDigest() {
     usedThisPeriod,
     suggestions,
     settings,
+    stats: {
+      total: totalRelevant,
+      used: usedCount,
+      available: availableCount,
+      expiring: expiringCount,
+      usedPercent,
+    },
   });
 
   const subject = `PerkGuard Digest — ${today.toLocaleString('default', { month: 'long' })} ${year}`;
@@ -232,6 +258,28 @@ function computeDaysUntilReset(perk, today, settings) {
   return Math.max(0, diff);
 }
 
+function isPerkCurrentlyRelevant(perk, today) {
+  // Mirrors the Python is_perk_currently_relevant logic for dashboard + digest
+  const resetType = perk.reset_type;
+  const anchor = (perk.reset_anchor || '').toUpperCase().trim();
+
+  if (resetType === 'semi_annual') {
+    const currentHalf = (today.getMonth() + 1) <= 6 ? 'H1' : 'H2';
+    return anchor === currentHalf;
+  }
+
+  if (resetType === 'quarterly') {
+    const currentQ = 'Q' + Math.floor(today.getMonth() / 3 + 1);
+    return anchor === currentQ;
+  }
+
+  if (resetType === 'monthly') {
+    return true; // Monthly benefits are always relevant
+  }
+
+  return true;
+}
+
 function getPeriodEndDate(perk, today, settings) {
   const year = today.getFullYear();
   const month = today.getMonth() + 1;
@@ -302,16 +350,45 @@ function generateSimpleSuggestions(availablePerks, trips, today) {
 // ---------------------------------------------------------------------------
 
 function buildHtmlEmail(data) {
-  const { today, available, expiring, usedThisPeriod, suggestions, settings } = data;
+  const { today, available, expiring, usedThisPeriod, suggestions, settings, stats } = data;
 
   const fmt = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
-  let html = `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 620px; margin: 0 auto; color: #222;">
-      <h1 style="color: #0f1116;">🛡️ PerkGuard Monthly Digest</h1>
-      <p style="color:#555;">${fmt(today)} • Your benefits at a glance</p>
+  // Stats header
+  let statsHtml = '';
+  if (stats) {
+    statsHtml = `
+      <table width="100%" style="background:#f8fafc; border-radius:10px; margin:16px 0; border:1px solid #e2e8f0;" cellpadding="0" cellspacing="0">
+        <tr>
+          <td style="padding:12px 16px; text-align:center; border-right:1px solid #e2e8f0;">
+            <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:0.5px;">Tracked</div>
+            <div style="font-size:22px; font-weight:700; color:#0f172a; line-height:1.1;">${stats.total}</div>
+          </td>
+          <td style="padding:12px 16px; text-align:center; border-right:1px solid #e2e8f0;">
+            <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:0.5px;">Used</div>
+            <div style="font-size:22px; font-weight:700; color:#166534; line-height:1.1;">${stats.used} <span style="font-size:12px; color:#64748b;">(${stats.usedPercent}%)</span></div>
+          </td>
+          <td style="padding:12px 16px; text-align:center; border-right:1px solid #e2e8f0;">
+            <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:0.5px;">Available</div>
+            <div style="font-size:22px; font-weight:700; color:#1e40af; line-height:1.1;">${stats.available}</div>
+          </td>
+          <td style="padding:12px 16px; text-align:center;">
+            <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:0.5px;">Expiring Soon</div>
+            <div style="font-size:22px; font-weight:700; color:#b45309; line-height:1.1;">${stats.expiring}</div>
+          </td>
+        </tr>
+      </table>
+    `;
+  }
 
-      <h2 style="color:#0f1116; border-bottom:1px solid #eee; padding-bottom:6px;">Available Now (${available.length})</h2>
+  let html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 620px; margin: 0 auto; color: #1f2937; padding: 0 12px; background:#ffffff;">
+      <div style="padding-top: 8px;">
+        <h1 style="color: #0f172a; margin:0 0 4px 0; font-size:24px; font-weight:700;">🛡️ PerkGuard</h1>
+        <p style="color:#475569; margin:0; font-size:14px;">Monthly Digest — ${fmt(today)}</p>
+      </div>
+
+      ${statsHtml}
   `;
 
   if (available.length === 0) {
@@ -319,41 +396,46 @@ function buildHtmlEmail(data) {
   } else {
     available.slice(0, 12).forEach(p => {
       const val = p.max_value ? ` (up to $${p.max_value})` : '';
-      html += `<div style="margin:8px 0; padding:8px 12px; background:#f8f9fa; border-radius:6px;">
-        <strong>${p.name}</strong>${val}<br>
-        <span style="font-size:12px; color:#666;">${p.card} • ${p.period_key || ''}</span>
-      </div>`;
+      html += `
+        <div style="margin:6px 0; padding:12px 14px; background:#f8fafc; border-radius:8px; border:1px solid #e2e8f0;">
+          <div style="font-weight:600; color:#0f172a; font-size:14px;">${p.name}</div>
+          <div style="font-size:12px; color:#475569; margin-top:3px;">${p.card}${val}</div>
+          <div style="font-size:11px; color:#64748b; margin-top:2px;">Resets: ${p.period_key || '—'}</div>
+        </div>`;
     });
-    if (available.length > 12) html += `<p style="font-size:12px; color:#888;">+ ${available.length - 12} more available…</p>`;
+    if (available.length > 12) html += `<p style="font-size:12px; color:#888; margin-top:4px;">+ ${available.length - 12} more available…</p>`;
   }
 
   if (expiring.length > 0) {
-    html += `<h2 style="color:#b45309; margin-top:24px;">⏰ Expiring Soon (≤30 days)</h2>`;
+    html += `<h2 style="color:#b45309; margin-top:28px; margin-bottom:8px;">⏰ Expiring Soon (≤30 days)</h2>`;
     expiring.forEach(p => {
-      html += `<div style="margin:6px 0; color:#92400e;">• <strong>${p.name}</strong> — ${p.days_left} days left</div>`;
+      html += `
+        <div style="margin:4px 0; padding:8px 12px; background:#fefce8; border-left:4px solid #f59e0b; border-radius:6px; color:#92400e;">
+          <strong>${p.name}</strong> — ${p.days_left} days left
+        </div>`;
     });
   }
 
   if (usedThisPeriod.length > 0) {
-    html += `<h2 style="color:#166534; margin-top:24px;">✅ Used This Period</h2>`;
-    usedThisPeriod.slice(0, 6).forEach(p => {
-      html += `<div style="margin:4px 0; color:#166534;">• ${p.name}</div>`;
+    html += `<h2 style="color:#166534; margin-top:28px; margin-bottom:8px;">✅ Used This Period</h2>`;
+    usedThisPeriod.slice(0, 8).forEach(p => {
+      html += `<div style="margin:3px 0; color:#166534;">• ${p.name}</div>`;
     });
   }
 
   if (suggestions && suggestions.length) {
-    html += `<h2 style="margin-top:28px;">💡 Smart Suggestions</h2>`;
+    html += `<h2 style="margin-top:28px; margin-bottom:8px;">💡 Smart Suggestions</h2>`;
     suggestions.forEach(s => {
-      html += `<div style="margin:8px 0; padding:10px; background:#fefce8; border-left:4px solid #ca8a04; border-radius:4px;">${s}</div>`;
+      html += `<div style="margin:6px 0; padding:10px 14px; background:#fefce8; border-left:4px solid #ca8a04; border-radius:6px; color:#713f12;">${s}</div>`;
     });
   }
 
   html += `
-      <hr style="margin:32px 0; border:none; border-top:1px solid #eee;">
-      <p style="font-size:12px; color:#888;">
+      <hr style="margin:40px 0 16px; border:none; border-top:1px solid #e2e8f0;">
+      <p style="font-size:11px; color:#64748b; line-height:1.5;">
         Generated by PerkGuard • 
-        <a href="https://docs.google.com/spreadsheets/d/${getSpreadsheetIdForLink()}" style="color:#888;">Open your sheet</a> • 
-        Dashboard: run <code>streamlit run app/main.py</code>
+        <a href="https://docs.google.com/spreadsheets/d/${getSpreadsheetIdForLink()}" style="color:#64748b;">Open your sheet</a><br>
+        View full dashboard: <code>streamlit run app/main.py</code>
       </p>
     </div>
   `;

@@ -37,6 +37,7 @@ from app.utils.date_utils import (
     get_expiring_soon_perks,
     format_period_label,
     get_current_period_key,
+    is_perk_currently_relevant,
 )
 
 # --------------------------------------------------------------------------- #
@@ -52,6 +53,12 @@ def build_digest(today: date | None = None) -> dict[str, Any]:
     value_logs = get_value_logs()
     settings = get_settings()
     trips = get_trips()
+
+    # Apply the same relevance filter used in the dashboard:
+    # - Hide H2 semi-annual perks while in H1 (and vice versa)
+    # - Hide non-current quarterly perks
+    # - Monthly perks are always included
+    perks = [p for p in perks if is_perk_currently_relevant(p, today, settings)]
 
     available = []
     expiring = []
